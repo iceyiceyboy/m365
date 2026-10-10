@@ -89,6 +89,11 @@
   </div>
 
   <div class="panel">
+    <div class="row"><b>Mark in log</b>
+      <div class="grp"><button class="mk">Light on</button><button class="mk">Light off</button><button class="mk">Grinding</button><button class="mk">Power loss</button></div></div>
+  </div>
+
+  <div class="panel">
     <div class="row"><b>Log</b><div class="grp"><button id="copylog">Copy log</button><button id="clearlog">Clear log</button></div></div>
     <pre id="log">Needs Chrome or Edge. Turn the scooter on first.</pre></div>
 </main>
@@ -284,6 +289,7 @@ async function readInfo(only){
 }
 $("#readinfo").onclick = readInfo;
 
+document.querySelectorAll(".mk").forEach(b => b.onclick = () => log("*** MARK: " + b.textContent));
 $("#copylog").onclick = async () => {
   const text = logLines.map(x => `${x.t} ${x.m}`).join("\n");
   try { await navigator.clipboard.writeText(text); log("Log copied."); }
