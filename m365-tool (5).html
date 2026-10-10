@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}</style>
+<title>M365 Settings</title>
+<style>
+  :root{--bg:#eef1ee;--ink:#1b2420;--mute:#5d6b64;--card:#fff;--line:#cfd8d2;--acc:#0f6b4f;--accink:#fff;--bad:#a3262a}
+  @media (prefers-color-scheme:dark){:root{--bg:#141a17;--ink:#e7eee9;--mute:#93a39a;--card:#1d2622;--line:#2f3b35;--acc:#4fc79a;--accink:#08241a;--bad:#ff8a8d}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;justify-content:center;padding:28px 16px}
+  main{width:100%;max-width:520px}
+  h1{font-size:1.6rem;margin:0 0 4px;letter-spacing:-.01em}
+  p.sub{margin:0 0 20px;color:var(--mute)}
+  .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--line)}
+  .row:first-of-type{border-top:0}
+  .row b{font-weight:600}
+  .grp{display:flex;gap:6px;flex-wrap:wrap}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:6px;padding:7px 14px}
+  button:hover:not(:disabled){border-color:var(--acc)}
+  button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  button.main{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  #status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+  #state{color:var(--mute)}
+  #log{font:12.5px/1.5 Consolas,monospace;color:var(--mute);max-height:150px;overflow:auto;white-space:pre-wrap;margin:0}
+  .err{color:var(--bad)}
+  table{border-collapse:collapse;width:100%;font-size:.88rem;white-space:nowrap}
+  th,td{text-align:left;padding:5px 10px 5px 0;border-top:1px solid var(--line)}
+  th{color:var(--mute);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+  <h1>M365 settings</h1>
+  <p class="sub">Connects straight to the scooter over Bluetooth. No account needed.</p>
+
+  <div class="panel" id="status">
+    <span id="state">Not connected</span>
+    <button class="main" id="connect">Connect to scooter</button>
+  </div>
+
+  <div class="panel" id="controls">
+    <div class="row"><b>Energy recovery</b>
+      <div class="grp">
+        <button data-reg="0x7B" data-val="0">Weak</button>
+        <button data-reg="0x7B" data-val="1">Medium</button>
+        <button data-reg="0x7B" data-val="2">Strong</button>
+      </div></div>
+    <div class="row"><b>Cruise control</b>
+      <div class="grp">
+        <button data-reg="0x7C" data-val="1">On</button>
+        <button data-reg="0x7C" data-val="0">Off</button>
+      </div></div>
+    <div class="row"><b>Tail light</b>
+      <div class="grp">
+        <button data-reg="0x7D" data-val="2">Always on</button>
+        <button data-reg="0x7D" data-val="0">Brake only</button>
+      </div></div>
+    <div class="row"><b>Total distance</b>
+      <div class="grp"><span id="km">–</span><button id="readkm">Read</button></div></div>
+    <div class="row"><b>Speed</b><span id="spd">–</span></div>
+    <div class="row"><b>Wheel/motor RPM (estimated)</b><span id="rpm">–</span></div>
+    <div class="row"><b>Power</b><span id="pw">–</span></div>
+    <div class="row"><b>Consumption now</b><span id="whkm">–</span></div>
+    <div class="row"><b>Consumption average (this trip)</b><span id="whavg">–</span></div>
+    <div class="row"><b>Regen braking (this trip)</b><span id="regen">–</span></div>
+    <div class="row"><b>Live readout</b><button id="live">Start</button></div>
+    <div class="row"><b>Lock</b>
+      <div class="grp">
+        <button data-reg="0x70" data-val="1">Lock</button>
+        <button data-reg="0x71" data-val="1">Unlock</button>
+        <button data-reg="0x79" data-val="1">Power off</button>
+      </div></div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><b>Scooter info</b><button id="readinfo">Read all</button></div>
+    <div id="info"><p class="sub" style="margin:0">Connect, then press Read all.</p></div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><b>Trip log</b>
+      <div class="grp"><button id="csv">Download CSV</button><button id="clear">Clear</button></div></div>
+    <p class="sub" id="tripstate" style="margin:0 0 8px">Start the live readout to record trips. A trip starts when you move and ends after 60 s stopped.</p>
+    <div style="overflow-x:auto"><table id="trips"></table></div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><b>Mark in log</b>
+      <div class="grp"><button class="mk">Light on</button><button class="mk">Light off</button><button class="mk">Grinding</button><button class="mk">Power loss</button></div></div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><b>Log</b><div class="grp"><button id="copylog">Copy log</button><button id="clearlog">Clear log</button></div></div>
+    <pre id="log">Needs Chrome or Edge. Turn the scooter on first.</pre></div>
+</main>
+
+<script>
+const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const TX  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // write to scooter
+const RX  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notifications
+
+let device, txChar;
+// Bluetooth allows only one write at a time, so writes go through a queue (with one retry if busy)
+let writeQueue = Promise.resolve();
+function gattWrite(p){
+  const run = async () => {
+    try { await txChar.writeValueWithoutResponse(p); }
+    catch(e){
+      if (!/in progress/i.test(e.message)) throw e;
+      await new Promise(r => setTimeout(r, 80));
+      await txChar.writeValueWithoutResponse(p);
+    }
+  };
+  const r = writeQueue.then(run);
+  writeQueue = r.catch(() => {});
+  return r;
+}
+const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
+const $ = s => document.querySelector(s);
+const LOGKEY = "m365log";
+let logLines = [], rxCount = 0, rawRx = 0;
+try { logLines = JSON.parse(localStorage.getItem(LOGKEY)) || []; } catch(e){}
+const esc = s => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+function drawLog(){
+  if (!logLines.length) return;
+  const l = $("#log");
+  l.innerHTML = logLines.map(x => `<span class="${x.bad ? "err" : ""}">${esc(x.t)} ${esc(x.m)}</span>`).join("\n");
+  l.scrollTop = l.scrollHeight;
+}
+const log = (m, bad) => {
+  logLines.push({ t: new Date().toLocaleTimeString(), m, bad: !!bad });
+  if (logLines.length > 300) logLines.splice(0, logLines.length - 300);
+  try { localStorage.setItem(LOGKEY, JSON.stringify(logLines)); } catch(e){}
+  drawLog();
+};
+const hex = a => [...a].map(b => b.toString(16).padStart(2, "0")).join(" ");
+
+function setEnabled(on){ document.querySelectorAll("#controls button").forEach(b => b.disabled = !on); }
+setEnabled(false);
+
+// Packet: 55 AA | len | 20 | 03 (write) | register | value lo | value hi | checksum lo | checksum hi
+function packet(reg, val){
+  const body = [0x04, 0x20, 0x03, reg, val & 0xff, (val >> 8) & 0xff];
+  const sum = body.reduce((a, b) => a + b, 0);
+  const chk = (sum ^ 0xffff) & 0xffff;
+  return new Uint8Array([0x55, 0xaa, ...body, chk & 0xff, chk >> 8]);
+}
+
+async function connect(){
+  try{
+    log("Opening device picker…");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "MIScooter" }, { services: [SVC] }],
+      optionalServices: [SVC]
+    });
+    device.addEventListener("gattserverdisconnected", () => {
+      log("Disconnected. The scooter may have powered off, gone out of range, or dropped the connection.", true);
+      stopLive(); $("#state").textContent = "Disconnected"; setEnabled(false); $("#connect").textContent = "Connect to scooter";
+    });
+    log("Picked " + (device.name || "a device") + ". Connecting…");
+    $("#state").textContent = "Connecting…";
+    const server = await within(device.gatt.connect(), 15000, "Connecting");
+    log("Connected to the device. Looking for the data service…");
+    let svc;
+    try { svc = await within(server.getPrimaryService(SVC), 10000, "Finding the service"); }
+    catch(e){
+      log("Service not found: " + e.message, true);
+      try { const all = await server.getPrimaryServices(); log("Services on this device: " + all.map(s => s.uuid).join(", ")); }
+      catch(e2){ log("Could not list services: " + e2.message, true); }
+      throw e;
+    }
+    log("Service found.");
+    txChar = await svc.getCharacteristic(TX);
+    const rx = await svc.getCharacteristic(RX);
+    await within(rx.startNotifications(), 10000, "Starting notifications");
+    log("Notifications on.");
+    rawRx = 0; rxCount = 0;
+    rx.addEventListener("characteristicvaluechanged", e => { rawRx++; feed(new Uint8Array(e.target.value.buffer)); });
+    window.handlePacket = d => {
+      rxCount++;
+      log("← " + hex(d));
+      if (d.length >= 8 && d[4] === 0x01 && d[5] !== 0xb5) onReg(d[3], d[5], d.slice(6, 4 + d[2]));
+      // Reply to total distance read: 55 AA 06 23 01 29 <4 bytes, meters, little-endian>
+      // Reply to speed read: 55 AA 04 23 01 B5 <int16, km/h x1000>
+      if (d.length >= 8 && d[0] === 0x55 && d[1] === 0xaa && d[4] === 0x01 && d[5] === 0xb5) {
+        let v = d[6] | (d[7] << 8); if (v > 32767) v -= 65536;
+        const kph = Math.abs(v) / 1000;
+        const rpm = (kph / 3.6) / (Math.PI * WHEEL_DIAMETER_M) * 60;
+        $("#spd").textContent = kph.toFixed(1) + " km/h";
+        $("#rpm").textContent = Math.round(rpm) + " rpm";
+        onSpeed(kph);
+        showPower(kph);
+      }
+      // Battery module: 0x33 current (10 mA units), 0x34 voltage (10 mV units)
+      if (d.length >= 8 && d[0] === 0x55 && d[3] === 0x25 && d[4] === 0x01 && (d[5] === 0x33 || d[5] === 0x34)) {
+        let v = d[6] | (d[7] << 8);
+        if (d[5] === 0x33) { if (v > 32767) v -= 65536; curA = CURRENT_SIGN * v / 100; }
+        else volt = v / 100;
+        if (curA != null && volt != null) pW = curA * volt;
+      }
+      // Reply from the battery module (0x25), register 0x32 = percent
+      if (d.length >= 8 && d[0] === 0x55 && d[1] === 0xaa && d[3] === 0x25 && d[4] === 0x01 && d[5] === 0x32) {
+        batt = d[6] | (d[7] << 8);
+      }
+      if (d.length >= 10 && d[0] === 0x55 && d[1] === 0xaa && d[4] === 0x01 && d[5] === 0x29) {
+        const m = (d[6] | (d[7] << 8) | (d[8] << 16) | (d[9] << 24)) >>> 0;
+        odoM = m;
+        $("#km").textContent = (m / 1000).toFixed(1) + " km";
+      }
+    };
+    $("#state").textContent = "Connected: " + (device.name || "scooter");
+    $("#connect").textContent = "Reconnect";
+    setEnabled(true);
+    log("Connected.");
+    await readInfo();                      // fill the info panel straight away
+    if (!rxCount) log(rawRx
+      ? "The scooter sent data in a format this tool can't read. Its firmware probably uses encryption."
+      : "The scooter connected but sent no replies. Its firmware may require encrypted communication, which this tool can't do.", true);
+    if (!liveTimer) $("#live").click();    // then start live readout and trip recording
+  }catch(e){
+    $("#state").textContent = "Not connected";
+    log("Could not connect: " + e.message, true);
+  }
+}
+
+async function send(reg, val){
+  const p = packet(reg, val);
+  try{
+    await gattWrite(p);
+    log("→ " + hex(p));
+    // Read the setting back so the log shows whether the scooter accepted it
+    if ([0x7b, 0x7c, 0x7d].includes(reg)) setTimeout(() => readReg(reg, 2, false), 300);
+  }catch(e){ log("Write failed: " + e.message, true); }
+}
+
+// Long replies (like the serial number) arrive split across several Bluetooth messages
+let rxbuf = [];
+function feed(b){
+  rxbuf.push(...b);
+  while (rxbuf.length >= 3) {
+    const i = rxbuf.findIndex((v, k) => v === 0x55 && rxbuf[k + 1] === 0xaa);
+    if (i < 0) { rxbuf = []; return; }
+    if (i > 0) rxbuf.splice(0, i);
+    if (rxbuf.length < 3) return;
+    const total = rxbuf[2] + 6;
+    if (rxbuf.length < total) return;
+    handlePacket(new Uint8Array(rxbuf.splice(0, total)));
+  }
+}
+
+// ---- Scooter info ----
+// Replies from 0x23 = motor controller, 0x25 = battery module
+const info = {};
+const u16 = p => p[0] | (p[1] << 8);
+const i16 = p => { const v = u16(p); return v > 32767 ? v - 65536 : v; };
+const ver = v => `${(v >> 8) & 15}.${(v >> 4) & 15}.${v & 15}`;
+function onReg(src, reg, p){ info[src + ":" + reg] = p; renderInfo(); }
+function renderInfo(){
+  const g = (s, r) => info[s + ":" + r];
+  const L = [];
+  const add = (k, p, f) => { if (p && p.length) L.push([k, f(p)]); };
+  add("Serial number", g(0x23, 0x10), p => String.fromCharCode(...p).replace(/[^\x20-\x7e]/g, ""));
+  add("Controller firmware", g(0x23, 0x1a), p => ver(u16(p)));
+  add("Error code", g(0x23, 0x1b), p => u16(p) || "none");
+  add("Warning code", g(0x23, 0x1c), p => u16(p) || "none");
+  add("Controller temperature", g(0x23, 0x3e), p => (i16(p) / 10).toFixed(1) + " °C");
+  add("Trip distance (scooter)", g(0x23, 0x2f), p => (u16(p) / 100).toFixed(2) + " km");
+  add("Estimated range", g(0x23, 0x25), p => (u16(p) / 100).toFixed(1) + " km");
+  add("Battery", g(0x25, 0x32), p => u16(p) + " %");
+  add("Battery voltage", g(0x25, 0x34), p => (u16(p) / 100).toFixed(2) + " V");
+  add("Battery current", g(0x25, 0x33), p => (i16(p) / 100).toFixed(2) + " A");
+  add("Battery temperature", g(0x25, 0x35), p => `${p[0] - 20} °C / ${p[1] - 20} °C`);
+  add("Capacity left", g(0x25, 0x31), p => u16(p) + " mAh");
+  add("Battery firmware", g(0x25, 0x17), p => ver(u16(p)));
+  add("Cell voltages", g(0x25, 0x40), p => {
+    const c = Array.from({ length: p.length >> 1 }, (_, i) => u16(p.slice(2 * i, 2 * i + 2)));
+    return c.map(v => (v / 1000).toFixed(3)).join(" ") + ` (spread ${Math.max(...c) - Math.min(...c)} mV)`;
+  });
+  $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join("");
+}
+async function readInfo(only){
+  const q = only || [[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
+             [0x17,2,0x22],[0x20,2,0x22],[0x31,2,0x22],[0x32,2,0x22],[0x33,2,0x22],[0x34,2,0x22],[0x35,2,0x22],[0x40,20,0x22]];
+  for (const [r, l, a] of q) { await readReg(r, l, true, a); await new Promise(s => setTimeout(s, 150)); }
+}
+$("#readinfo").onclick = readInfo;
+
+document.querySelectorAll(".mk").forEach(b => b.onclick = () => log("*** MARK: " + b.textContent));
+$("#copylog").onclick = async () => {
+  const text = logLines.map(x => `${x.t} ${x.m}`).join("\n");
+  try { await navigator.clipboard.writeText(text); log("Log copied."); }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); log("Log copied."); } catch(e2){ log("Could not copy. Select the log text by hand.", true); }
+    ta.remove();
+  }
+};
+$("#clearlog").onclick = () => { logLines = []; try { localStorage.removeItem(LOGKEY); } catch(e){} $("#log").textContent = "Log cleared."; };
+log("--- Page opened " + new Date().toLocaleString());
+
+if(!navigator.bluetooth){
+  $("#connect").disabled = true;
+  log("This browser has no Web Bluetooth. Open this file in Chrome or Edge.", true);
+}
+// Read request: 55 AA | 03 | 20 | 01 (read) | register 0x29 | 4 bytes to read | checksum
+async function readReg(reg, len, quiet, addr = 0x20){ // 0x20 = motor controller, 0x22 = battery
+  const body = [0x03, addr, 0x01, reg, len];
+  const chk = (body.reduce((a, b) => a + b, 0) ^ 0xffff) & 0xffff;
+  const p = new Uint8Array([0x55, 0xaa, ...body, chk & 0xff, chk >> 8]);
+  try{ await gattWrite(p); if(!quiet) log("→ " + hex(p)); }
+  catch(e){ log("Read failed: " + e.message, true); if (/disconnect|not connected/i.test(e.message)) stopLive(); }
+}
+const readKm = () => readReg(0x29, 4);
+$("#readkm").onclick = readKm;
+
+// Live readout: asks for speed twice a second.
+// The scooter has no RPM sensor output; RPM is worked out from speed and tyre size.
+// Hub motor = wheel speed, so wheel RPM equals motor RPM.
+const WHEEL_DIAMETER_M = 0.215; // M365 8.5" tyre; adjust if yours differs
+let liveTimer = null, tick = 0;
+function stopLive(){
+  clearInterval(liveTimer); liveTimer = null; $("#live").textContent = "Start";
+  endTrip();
+}
+$("#live").onclick = async () => {
+  if (liveTimer) return stopLive();
+  tick = 0; lastT = 0;
+  await readReg(0x29, 4, true);   // odometer, so trips have a start value
+  await readReg(0x32, 2, true, 0x22);   // battery %
+  liveTimer = setInterval(() => {
+    readReg(0xb5, 2, true);                          // speed every 0.5 s
+    readReg(0x33, 2, true, 0x22);                                  // battery current every 0.5 s (catches short braking)
+    if (tick % 4 === 0) readReg(0x34, 2, true, 0x22);              // voltage every 2 s
+    if (tick % 60 === 30) readInfo([[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x31,2,0x22],[0x35,2,0x22],[0x40,20,0x22]]); // errors, temps, cells every 30 s
+    if (tick % 10 === 5) readReg(0x29, 4, true);     // odometer every 5 s
+    if (tick % 40 === 15) readReg(0x32, 2, true, 0x22);    // battery every 20 s
+    tick++;
+  }, 500);
+  $("#live").textContent = "Stop";
+  $("#tripstate").textContent = "Recording. Waiting for movement…";
+};
+
+// ---- Trip logger (the scooter itself stores no trip history) ----
+let odoM = null, batt = null, trip = null, idleS = 0, lastT = 0;
+// Power = battery voltage x current. If it reads negative while riding, change this to -1.
+const CURRENT_SIGN = 1;
+let curA = null, volt = null, pW = null;
+function showPower(kph){
+  if (pW == null) return;
+  $("#pw").textContent = Math.round(pW) + " W";
+  $("#whkm").textContent = kph > 3 ? (pW / kph).toFixed(1) + " Wh/km" : "–";
+  $("#whavg").textContent = trip && trip.integ > 0.05 ? (trip.wh / trip.integ).toFixed(1) + " Wh/km" : "–";
+  $("#regen").textContent = trip ? trip.regenWh.toFixed(2) + " Wh, peak " + Math.round(trip.peak) + " W" : "–";
+}
+const KEY = "m365trips";
+const loadTrips = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } };
+const saveTrips = t => { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch(e){ log("Could not save log: " + e.message, true); } };
+let trips = loadTrips();
+
+function onSpeed(kph){
+  const now = Date.now();
+  const dt = lastT ? (now - lastT) / 1000 : 0.5;
+  lastT = now;
+  if (!trip && kph > 1) {
+    trip = { start: now, movingS: 0, top: 0, integ: 0, wh: 0, regenWh: 0, peak: 0, odoStart: odoM, battStart: batt };
+    idleS = 0;
+    $("#tripstate").textContent = "Trip in progress…";
+  }
+  if (!trip) return;
+  if (kph > 0.5) { trip.movingS += dt; idleS = 0; } else idleS += dt;
+  trip.integ += kph / 3600 * dt;
+  if (pW != null) trip.wh += pW * dt / 3600;
+  if (pW != null && pW < 0) { trip.regenWh += -pW * dt / 3600; trip.peak = Math.max(trip.peak, -pW); }
+  trip.top = Math.max(trip.top, kph);
+  if (idleS >= 60) endTrip();
+}
+
+function endTrip(){
+  if (!trip) return;
+  const t = trip; trip = null;
+  const end = Date.now() - idleS * 1000;
+  idleS = 0;
+  const odoOk = t.odoStart != null && odoM != null && odoM >= t.odoStart;
+  const dist = odoOk ? (odoM - t.odoStart) / 1000 : t.integ;
+  $("#tripstate").textContent = liveTimer ? "Recording. Waiting for movement…" : "Not recording.";
+  if (dist < 0.05) return; // ignore tiny wobbles
+  trips.unshift({
+    start: new Date(t.start).toLocaleString(),
+    end: new Date(end).toLocaleString(),
+    durMin: (end - t.start) / 60000,
+    movMin: t.movingS / 60,
+    km: dist,
+    avg: t.movingS > 0 ? dist / (t.movingS / 3600) : 0,
+    top: t.top,
+    odoStart: t.odoStart != null ? t.odoStart / 1000 : "",
+    odoEnd: odoM != null ? odoM / 1000 : "",
+    wh: t.wh,
+    regenWh: t.regenWh,
+    peak: t.peak,
+    whkm: dist > 0 ? t.wh / dist : 0,
+    battStart: t.battStart ?? "",
+    battEnd: batt ?? ""
+  });
+  saveTrips(trips); renderTrips();
+}
+
+function renderTrips(){
+  const rows = trips.map(t => `<tr><td>${t.start}</td><td>${t.durMin.toFixed(0)} min</td><td>${t.km.toFixed(2)} km</td><td>${t.avg.toFixed(1)}</td><td>${t.top.toFixed(1)}</td><td>${t.whkm != null ? t.whkm.toFixed(1) : "–"}</td><td>${(t.regenWh ?? 0).toFixed(1)}</td><td>${t.battStart}→${t.battEnd}%</td></tr>`).join("");
+  $("#trips").innerHTML = trips.length
+    ? `<tr><th>Started</th><th>Time</th><th>Distance</th><th>Avg km/h</th><th>Top km/h</th><th>Wh/km</th><th>Regen Wh</th><th>Battery</th></tr>${rows}`
+    : "";
+}
+$("#csv").onclick = () => {
+  const head = "start,end,duration_min,moving_min,distance_km,avg_kmh,top_kmh,energy_wh,wh_per_km,regen_wh,peak_regen_w,odo_start_km,odo_end_km,battery_start_pct,battery_end_pct";
+  const lines = trips.map(t => [`"${t.start}"`,`"${t.end}"`,t.durMin.toFixed(1),t.movMin.toFixed(1),t.km.toFixed(2),t.avg.toFixed(1),t.top.toFixed(1),(t.wh ?? 0).toFixed(1),(t.whkm ?? 0).toFixed(1),(t.regenWh ?? 0).toFixed(2),Math.round(t.peak ?? 0),t.odoStart,t.odoEnd,t.battStart,t.battEnd].join(","));
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([[head, ...lines].join("\n")], { type: "text/csv" }));
+  a.download = "m365-trips.csv"; a.click();
+};
+$("#clear").onclick = () => { if (confirm("Delete all logged trips?")) { trips = []; saveTrips(trips); renderTrips(); } };
+renderTrips();
+$("#connect").onclick = connect;
+document.querySelectorAll("#controls button[data-reg]").forEach(b =>
+  b.onclick = () => send(Number(b.dataset.reg), Number(b.dataset.val)));
+</script>
+</body>
+</html>
