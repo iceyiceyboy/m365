@@ -87,6 +87,7 @@
     <div class="row"><b>Peak power (this trip)</b><span id="pk">–</span></div>
     <div class="row"><b>Regen power</b><span id="rgtxt">–</span></div>
     <div class="row"><b>Estimated range (from your rides)</b><span id="rng">–</span></div>
+    <div class="row"><b>Range on a full battery</b><span id="rngfull">–</span></div>
     <div class="row"><span id="rngbasis">Needs a ride of at least 0.5 km to learn your consumption.</span></div>
     <div class="row"><b>Live readout</b><button id="live">Start</button></div>
     <div class="row"><b>Lock</b>
@@ -108,6 +109,7 @@
     <div class="row"><b>Est. time to full</b><span id="chgeta">–</span></div>
     <div class="row"><b>Range added this charge</b><span id="chgkm">–</span></div>
     <div class="row"><b>Range gain per hour</b><span id="chgkmh">–</span></div>
+    <div class="row"><b>Est. range when full</b><span id="chgfull">–</span></div>
     <div class="row"><b>Error / warning codes</b><span id="chgerr">–</span></div>
     <div class="row"><b>Battery temperature</b><span id="chgtemp">–</span></div>
     <div class="row"><b>Alerts (this charge)</b><span id="chgalert">–</span></div>
@@ -177,7 +179,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.81"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82)
+const VERSION = "1.82"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82 -> 1.83)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -502,6 +504,7 @@ function rangeBasis(){
 }
 function updateRange(){
   const basis = rangeBasis(), left = energyLeftWh();
+  $("#rngfull").textContent = basis ? (BATTERY_WH / basis.whkm).toFixed(1) + " km" : "–";
   if (!basis) {
     $("#rng").textContent = "–";
     $("#rngbasis").textContent = "Needs a ride of at least " + MIN_RIDE_KM + " km to learn your consumption.";
@@ -644,6 +647,7 @@ function updateCharge(){
   const left = energyLeftWh();
   $("#chgeta").textContent = !chargingNow || left == null ? "–" : (batt >= 100 || left >= BATTERY_WH) ? "Full" : fmtDur((BATTERY_WH - left) / chgW * 60);
   const rb = rangeBasis();
+  $("#chgfull").textContent = rb ? (BATTERY_WH / rb.whkm).toFixed(1) + " km" : "–";
   $("#chgkm").textContent = !charge ? "–" : rb ? "+" + (charge.wh / rb.whkm).toFixed(1) + " km" : "needs a 0.5 km ride first";
   $("#chgkmh").textContent = chargingNow && rb ? "+" + (chgW / rb.whkm).toFixed(1) + " km/h" : "–";
   const e = info[0x23 + ":" + 0x1b], w = info[0x23 + ":" + 0x1c];
