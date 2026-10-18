@@ -6,8 +6,8 @@
 <style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}</style>
 <title>M365 Settings</title>
 <style>
-  :root{--bg:#eef1ee;--ink:#1b2420;--mute:#5d6b64;--card:#fff;--line:#cfd8d2;--acc:#0f6b4f;--accink:#fff;--bad:#a3262a}
-  @media (prefers-color-scheme:dark){:root{--bg:#141a17;--ink:#e7eee9;--mute:#93a39a;--card:#1d2622;--line:#2f3b35;--acc:#4fc79a;--accink:#08241a;--bad:#ff8a8d}}
+  :root{--bg:#f0f0f0;--ink:#111;--mute:#666;--card:#fff;--line:#c8c8c8;--acc:#000;--accink:#fff;--bad:#c40000}
+  @media (prefers-color-scheme:dark){:root{--bg:#000;--ink:#f2f2f2;--mute:#9a9a9a;--card:#141414;--line:#333;--acc:#fff;--accink:#000;--bad:#ff5a5a}}
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif;display:flex;justify-content:center;padding:28px 16px}
   main{width:100%;max-width:520px}
@@ -22,6 +22,7 @@
   button:hover:not(:disabled){border-color:var(--acc)}
   button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
   button.main{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
+  button.on{background:var(--acc);color:var(--accink);border-color:var(--acc);font-weight:600}
   button:disabled{opacity:.4;cursor:not-allowed}
   #status{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
   #state{color:var(--mute)}
@@ -32,11 +33,15 @@
   th{color:var(--mute);font-weight:600}
   #rng{font-size:1.25rem;font-weight:700;color:var(--acc)}
   #rngbasis{color:var(--mute);font-size:.85rem}
+  #ver{font-size:.9rem;font-weight:400;color:var(--mute)}
+  .cells{flex-basis:100%;line-height:1.8;font-size:.92rem}
+  .cellbad{color:var(--bad);font-weight:700}
+
 </style>
 </head>
 <body>
 <main>
-  <h1>M365 settings</h1>
+  <h1>M365 settings <span id="ver"></span></h1>
   <p class="sub">Connects straight to the scooter over Bluetooth. No account needed.</p>
 
   <div class="panel" id="status">
@@ -69,6 +74,8 @@
     <div class="row"><b>Consumption now</b><span id="whkm">–</span></div>
     <div class="row"><b>Consumption average (this trip)</b><span id="whavg">–</span></div>
     <div class="row"><b>Regen braking (this trip)</b><span id="regen">–</span></div>
+    <div class="row"><b>Peak power (this trip)</b><span id="pk">–</span></div>
+    <div class="row"><b>Regen power</b><span id="rgtxt">–</span></div>
     <div class="row"><b>Estimated range (from your rides)</b><span id="rng">–</span></div>
     <div class="row"><span id="rngbasis">Needs a ride of at least 0.5 km to learn your consumption.</span></div>
     <div class="row"><b>Live readout</b><button id="live">Start</button></div>
@@ -112,6 +119,10 @@ const BATTERY_WH = 280;       // M365 pack: 36 V x 7.8 Ah. Change if you have a 
 const NOMINAL_V = 36;         // used to turn "capacity left" (mAh) into Wh
 const MIN_RIDE_KM = 0.5;      // rides shorter than this are ignored
 const RANGE_RIDES = 5;        // how many recent rides to average
+// ---- Warning thresholds ----
+const TEMP_WARN_C = 60;       // controller temperature that counts as a warning
+const CELL_DEV_MV = 50;       // a cell this far from the median cell is flagged
+const CELL_MIN_MV = 2800, CELL_MAX_MV = 4250; // absolute cell limits
 
 let device, txChar;
 // Bluetooth allows only one write at a time, so writes go through a queue (with one retry if busy)
@@ -131,6 +142,9 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
+const VERSION = "1.5"; // bump by 0.1 on every update (1.5 -> 1.6 -> 1.7 ...)
+$("#ver").textContent = "v" + VERSION;
+document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
 let logLines = [], rxCount = 0, rawRx = 0;
 try { logLines = JSON.parse(localStorage.getItem(LOGKEY)) || []; } catch(e){}
@@ -209,7 +223,7 @@ async function connect(){
       if (d.length >= 8 && d[0] === 0x55 && d[3] === 0x25 && d[4] === 0x01 && (d[5] === 0x33 || d[5] === 0x34)) {
         let v = d[6] | (d[7] << 8);
         if (d[5] === 0x33) { if (v > 32767) v -= 65536; curA = CURRENT_SIGN * v / 100; }
-        else volt = v / 100;
+        else { volt = v / 100; if (trip && volt > 0) trip.minV = trip.minV == null ? volt : Math.min(trip.minV, volt); }
         if (curA != null && volt != null) pW = curA * volt;
       }
       // Reply from the battery module (0x25), register 0x32 = percent
@@ -242,6 +256,7 @@ async function send(reg, val){
   try{
     await gattWrite(p);
     log("→ " + hex(p));
+    if ([0x7b, 0x7c, 0x7d].includes(reg)) markSel(reg, val);
     // Read the setting back so the log shows whether the scooter accepted it
     if ([0x7b, 0x7c, 0x7d].includes(reg)) setTimeout(() => readReg(reg, 2, false), 300);
   }catch(e){ log("Write failed: " + e.message, true); }
@@ -268,7 +283,26 @@ const info = {};
 const u16 = p => p[0] | (p[1] << 8);
 const i16 = p => { const v = u16(p); return v > 32767 ? v - 65536 : v; };
 const ver = v => `${(v >> 8) & 15}.${(v >> 4) & 15}.${v & 15}`;
-function onReg(src, reg, p){ info[src + ":" + reg] = p; renderInfo(); }
+function onReg(src, reg, p){
+  info[src + ":" + reg] = p;
+  if (src === 0x23 && [0x7b, 0x7c, 0x7d].includes(reg)) markSel(reg, u16(p));
+  trackTrip(src, reg, p);
+  renderInfo();
+}
+// Highlight the option that is currently active
+function markSel(reg, val){
+  document.querySelectorAll("#controls button[data-reg]").forEach(b => {
+    if (Number(b.dataset.reg) !== reg) return;
+    const on = Number(b.dataset.val) === val;
+    b.classList.toggle("on", on); b.setAttribute("aria-pressed", on);
+  });
+}
+const cellList = p => Array.from({ length: p.length >> 1 }, (_, i) => u16(p.slice(2 * i, 2 * i + 2)));
+function badCells(c){
+  const s = [...c].sort((a, b) => a - b), mid = s.length >> 1;
+  const med = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  return c.map((v, i) => (Math.abs(v - med) > CELL_DEV_MV || v < CELL_MIN_MV || v > CELL_MAX_MV) ? i : -1).filter(i => i >= 0);
+}
 function renderInfo(){
   const g = (s, r) => info[s + ":" + r];
   const L = [];
@@ -287,14 +321,15 @@ function renderInfo(){
   add("Capacity left", g(0x25, 0x31), p => u16(p) + " mAh");
   add("Battery firmware", g(0x25, 0x17), p => ver(u16(p)));
   add("Cell voltages", g(0x25, 0x40), p => {
-    const c = Array.from({ length: p.length >> 1 }, (_, i) => u16(p.slice(2 * i, 2 * i + 2)));
-    return c.map(v => (v / 1000).toFixed(3)).join(" ") + ` (spread ${Math.max(...c) - Math.min(...c)} mV)`;
+    const c = cellList(p), bad = badCells(c);
+    return c.map((v, i) => `<span class="${bad.includes(i) ? "cellbad" : ""}">${i + 1}# ${(v / 1000).toFixed(3)}</span>`).join(" &nbsp;")
+      + ` (spread ${Math.max(...c) - Math.min(...c)} mV)`;
   });
-  $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join("");
+  $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span${k === "Cell voltages" ? ' class="cells"' : ""}>${v}</span></div>`).join("");
   updateRange();
 }
 async function readInfo(only){
-  const q = only || [[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
+  const q = only || [[0x7b,2,0x20],[0x7c,2,0x20],[0x7d,2,0x20],[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
              [0x17,2,0x22],[0x20,2,0x22],[0x31,2,0x22],[0x32,2,0x22],[0x33,2,0x22],[0x34,2,0x22],[0x35,2,0x22],[0x40,20,0x22]];
   for (const [r, l, a] of q) { await readReg(r, l, true, a); await new Promise(s => setTimeout(s, 150)); }
 }
@@ -335,7 +370,7 @@ $("#readkm").onclick = readKm;
 const WHEEL_DIAMETER_M = 0.215; // M365 8.5" tyre; adjust if yours differs
 let liveTimer = null, tick = 0;
 function stopLive(){
-  clearInterval(liveTimer); liveTimer = null; $("#live").textContent = "Start";
+  clearInterval(liveTimer); liveTimer = null; $("#live").textContent = "Start"; $("#live").classList.remove("on");
   endTrip();
 }
 $("#live").onclick = async () => {
@@ -352,7 +387,7 @@ $("#live").onclick = async () => {
     if (tick % 40 === 15) readReg(0x32, 2, true, 0x22);    // battery every 20 s
     tick++;
   }, 500);
-  $("#live").textContent = "Stop";
+  $("#live").textContent = "Stop"; $("#live").classList.add("on");
   $("#tripstate").textContent = "Recording. Waiting for movement…";
 };
 
@@ -367,8 +402,38 @@ function showPower(kph){
     $("#whkm").textContent = kph > 3 ? (pW / kph).toFixed(1) + " Wh/km" : "–";
     $("#whavg").textContent = trip && trip.integ > 0.05 ? (trip.wh / trip.integ).toFixed(1) + " Wh/km" : "–";
     $("#regen").textContent = trip ? trip.regenWh.toFixed(2) + " Wh, peak " + Math.round(trip.peak) + " W" : "–";
+    $("#pk").textContent = trip ? Math.round(trip.peakW) + " W" : "–";
+    const rW = pW < 0 ? -pW : 0, pkR = trip ? trip.peak : 0;
+    $("#rgtxt").textContent = Math.round(rW) + " W now · peak " + Math.round(pkR) + " W";
   }
   updateRange();
+}
+
+// ---- Trip alerts and extra stats ----
+function addAlert(a){
+  if (!trip || trip.alerts.has(a)) return;
+  trip.alerts.add(a);
+  log("⚠ " + a + " during trip", true);
+  $("#tripstate").textContent = "⚠ " + [...trip.alerts].join(", ");
+  $("#tripstate").classList.add("err");
+}
+function trackTrip(src, reg, p){
+  if (!trip || !p || !p.length) return;
+  if (src === 0x23 && reg === 0x1b && u16(p)) addAlert("Error " + u16(p));
+  if (src === 0x23 && reg === 0x1c && u16(p)) addAlert("Warning " + u16(p));
+  if (src === 0x23 && reg === 0x3e) {
+    const t = i16(p) / 10;
+    trip.maxTemp = Math.max(trip.maxTemp ?? t, t);
+    if (t >= TEMP_WARN_C) addAlert("Controller hot");
+  }
+  if (src === 0x25 && reg === 0x40) {
+    const c = cellList(p);
+    if (c.length) {
+      trip.maxSpread = Math.max(trip.maxSpread, Math.max(...c) - Math.min(...c));
+      const bad = badCells(c);
+      if (bad.length) addAlert("Cell " + bad.map(i => i + 1).join(",") + " off");
+    }
+  }
 }
 
 // ---- Estimated range ----
@@ -414,14 +479,17 @@ function onSpeed(kph){
   const dt = lastT ? (now - lastT) / 1000 : 0.5;
   lastT = now;
   if (!trip && kph > 1) {
-    trip = { start: now, movingS: 0, top: 0, integ: 0, wh: 0, regenWh: 0, peak: 0, odoStart: odoM, battStart: batt };
+    trip = { start: now, movingS: 0, top: 0, integ: 0, wh: 0, regenWh: 0, peak: 0, peakW: 0, maxTemp: null, minV: null, maxSpread: 0, alerts: new Set(), odoStart: odoM, battStart: batt };
     idleS = 0;
-    $("#tripstate").textContent = "Trip in progress…";
+    $("#tripstate").textContent = "Trip in progress…"; $("#tripstate").classList.remove("err");
+    // codes/temps/cells already read before the trip started
+    [[0x23, 0x1b], [0x23, 0x1c], [0x23, 0x3e], [0x25, 0x40]].forEach(([sr, r]) => { const q = info[sr + ":" + r]; if (q) trackTrip(sr, r, q); });
   }
   if (!trip) return;
   if (kph > 0.5) { trip.movingS += dt; idleS = 0; } else idleS += dt;
   trip.integ += kph / 3600 * dt;
   if (pW != null) trip.wh += pW * dt / 3600;
+  if (pW != null && pW > 0) trip.peakW = Math.max(trip.peakW, pW);
   if (pW != null && pW < 0) { trip.regenWh += -pW * dt / 3600; trip.peak = Math.max(trip.peak, -pW); }
   trip.top = Math.max(trip.top, kph);
   if (idleS >= 60) endTrip();
@@ -434,6 +502,7 @@ function endTrip(){
   idleS = 0;
   const odoOk = t.odoStart != null && odoM != null && odoM >= t.odoStart;
   const dist = odoOk ? (odoM - t.odoStart) / 1000 : t.integ;
+  $("#tripstate").classList.remove("err");
   $("#tripstate").textContent = liveTimer ? "Recording. Waiting for movement…" : "Not recording.";
   if (dist < 0.05) return; // ignore tiny wobbles
   trips.unshift({
@@ -451,21 +520,30 @@ function endTrip(){
     peak: t.peak,
     whkm: dist > 0 ? t.wh / dist : 0,
     battStart: t.battStart ?? "",
-    battEnd: batt ?? ""
+    battEnd: batt ?? "",
+    peakW: t.peakW,
+    maxTemp: t.maxTemp ?? "",
+    minV: t.minV ?? "",
+    spread: t.maxSpread,
+    alerts: [...t.alerts]
   });
   saveTrips(trips); renderTrips();
 }
 
 function renderTrips(){
-  const rows = trips.map(t => `<tr><td>${t.start}</td><td>${t.durMin.toFixed(0)} min</td><td>${t.km.toFixed(2)} km</td><td>${t.avg.toFixed(1)}</td><td>${t.top.toFixed(1)}</td><td>${t.whkm != null ? t.whkm.toFixed(1) : "–"}</td><td>${(t.regenWh ?? 0).toFixed(1)}</td><td>${t.battStart}→${t.battEnd}%</td></tr>`).join("");
+  const n = (v, d = 0) => v === "" || v == null ? "–" : Number(v).toFixed(d);
+  const rows = trips.map(t => {
+    const al = t.alerts ? (t.alerts.length ? "⚠ " + t.alerts.map(esc).join(", ") : "OK") : "–";
+    return `<tr><td>${t.start}</td><td>${t.durMin.toFixed(0)} min</td><td>${t.km.toFixed(2)} km</td><td>${t.avg.toFixed(1)}</td><td>${t.top.toFixed(1)}</td><td>${n(t.whkm, 1)}</td><td>${n(t.peakW)}</td><td>${n(t.regenWh ?? 0, 1)}</td><td>${n(t.peak)}</td><td>${t.battStart}→${t.battEnd}%</td><td>${n(t.maxTemp)}</td><td>${n(t.minV, 1)}</td><td>${n(t.spread)}</td><td class="${t.alerts && t.alerts.length ? "err" : ""}">${al}</td></tr>`;
+  }).join("");
   $("#trips").innerHTML = trips.length
-    ? `<tr><th>Started</th><th>Time</th><th>Distance</th><th>Avg km/h</th><th>Top km/h</th><th>Wh/km</th><th>Regen Wh</th><th>Battery</th></tr>${rows}`
+    ? `<tr><th>Started</th><th>Time</th><th>Distance</th><th>Avg km/h</th><th>Top km/h</th><th>Wh/km</th><th>Peak W</th><th>Regen Wh</th><th>Peak regen W</th><th>Battery</th><th>Max °C</th><th>Min V</th><th>Cell spread mV</th><th>Alerts</th></tr>${rows}`
     : "";
   updateRange();
 }
 $("#csv").onclick = () => {
-  const head = "start,end,duration_min,moving_min,distance_km,avg_kmh,top_kmh,energy_wh,wh_per_km,regen_wh,peak_regen_w,odo_start_km,odo_end_km,battery_start_pct,battery_end_pct";
-  const lines = trips.map(t => [`"${t.start}"`,`"${t.end}"`,t.durMin.toFixed(1),t.movMin.toFixed(1),t.km.toFixed(2),t.avg.toFixed(1),t.top.toFixed(1),(t.wh ?? 0).toFixed(1),(t.whkm ?? 0).toFixed(1),(t.regenWh ?? 0).toFixed(2),Math.round(t.peak ?? 0),t.odoStart,t.odoEnd,t.battStart,t.battEnd].join(","));
+  const head = "start,end,duration_min,moving_min,distance_km,avg_kmh,top_kmh,energy_wh,wh_per_km,regen_wh,peak_regen_w,odo_start_km,odo_end_km,battery_start_pct,battery_end_pct,peak_power_w,max_temp_c,min_voltage_v,cell_spread_mv,alerts";
+  const lines = trips.map(t => [`"${t.start}"`,`"${t.end}"`,t.durMin.toFixed(1),t.movMin.toFixed(1),t.km.toFixed(2),t.avg.toFixed(1),t.top.toFixed(1),(t.wh ?? 0).toFixed(1),(t.whkm ?? 0).toFixed(1),(t.regenWh ?? 0).toFixed(2),Math.round(t.peak ?? 0),t.odoStart,t.odoEnd,t.battStart,t.battEnd,Math.round(t.peakW ?? 0),t.maxTemp ?? "",t.minV ?? "",t.spread ?? "",`"${(t.alerts || []).join("; ")}"`].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([[head, ...lines].join("\n")], { type: "text/csv" }));
   a.download = "m365-trips.csv"; a.click();
