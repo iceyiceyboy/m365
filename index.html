@@ -127,6 +127,12 @@
     <div id="info"><p class="sub" style="margin:0">Connect, then press Read all.</p></div>
   </div>
 
+  <details class="panel" id="xbox">
+    <summary><b>Extra battery info</b></summary>
+    <div class="row"><span style="color:var(--mute);font-size:.85rem">From the battery module. Some meanings come from community docs and may differ by firmware.</span><button id="xrefresh">Refresh</button></div>
+    <div id="xinfo"><p class="sub" style="margin:0">Connect, then open this tab.</p></div>
+  </details>
+
   <div class="panel">
     <div class="row"><b>Trip log</b>
       <div class="grp"><button id="csv">Download CSV</button><button id="csvcopy">Copy CSV</button><button id="clear">Clear</button></div></div>
@@ -179,7 +185,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.83"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82 -> 1.83 -> 1.84)
+const VERSION = "1.9"; // new feature: +0.1 (1.9 -> 2.0). Small addition to an existing feature: add a digit (1.9 -> 1.91 -> 1.92)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -369,13 +375,17 @@ function renderInfo(){
   $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span${k === "Cell voltages" ? ' class="cells"' : ""}>${v}</span></div>`).join("");
   updateRange();
   updateCharge();
+  renderExtra();
 }
+// Extra battery-module registers (0x22): serial, design/actual capacity, charge cycles, charge count, status, health
+const EXTRA_ONLY = [[0x10,14,0x22],[0x18,2,0x22],[0x19,2,0x22],[0x1b,2,0x22],[0x1c,2,0x22],[0x30,2,0x22],[0x3b,2,0x22]];
+const EXTRA_REFRESH = [...EXTRA_ONLY, [0x17,2,0x22],[0x20,2,0x22],[0x31,2,0x22],[0x32,2,0x22],[0x35,2,0x22],[0x40,20,0x22]];
 async function readInfo(only){
   const q = only || [[0x7b,2,0x20],[0x7c,2,0x20],[0x7d,2,0x20],[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
-             [0x17,2,0x22],[0x20,2,0x22],[0x31,2,0x22],[0x32,2,0x22],[0x33,2,0x22],[0x34,2,0x22],[0x35,2,0x22],[0x40,20,0x22]];
+             [0x17,2,0x22],[0x20,2,0x22],[0x31,2,0x22],[0x32,2,0x22],[0x33,2,0x22],[0x34,2,0x22],[0x35,2,0x22],[0x40,20,0x22],...EXTRA_ONLY];
   for (const [r, l, a] of q) { await readReg(r, l, true, a); await new Promise(s => setTimeout(s, 150)); }
 }
-$("#readinfo").onclick = readInfo;
+$("#readinfo").onclick = () => readInfo();   // (it used to pass the click event in as the register list)
 
 document.querySelectorAll(".mk").forEach(b => b.onclick = () => log("*** MARK: " + b.textContent));
 $("#copylog").onclick = async () => {
@@ -449,6 +459,7 @@ function showPower(kph){
     $("#rgtxt").textContent = Math.round(rW) + " W now · peak " + Math.round(pkR) + " W";
   }
   updateRange();
+  renderExtra();
 }
 
 // ---- Trip alerts and extra stats ----
@@ -694,6 +705,60 @@ function renderCharges(){
     ? `<tr><th>Started</th><th>Time</th><th>Added Wh</th><th>Range +km</th><th>Battery</th><th>Peak W</th><th>Max °C</th><th>Alerts</th></tr>${rows}` : "";
 }
 $("#cclear").onclick = () => { if (confirm("Delete the charge log?")) { charges = []; try { if (CKEY) localStorage.setItem(CKEY, "[]"); } catch(e){} renderCharges(); } };
+// ---- Extra battery info tab ----
+function renderExtra(){
+  if (!$("#xbox").open) return;
+  const g = r => info[0x25 + ":" + r], L = [];
+  const num = r => { const p = g(r); return p && p.length >= 2 ? u16(p) : null; };
+  const add = (k, v) => { if (v != null && v !== "") L.push([k, v]); };
+  const mah = num(0x31), pct = num(0x32), fcap = num(0x18), acap = num(0x19), health = num(0x3b);
+  const wh = m => "~" + Math.round(m / 1000 * NOMINAL_V) + " Wh";
+  add("Remaining capacity", mah != null ? `${mah} mAh${pct != null ? " (" + pct + " %)" : ""} · ${wh(mah)}` : null);
+  add("Initial (design) capacity", fcap != null ? `${fcap} mAh · ${wh(fcap)}` : null);
+  add("Actual capacity", acap != null ? `${acap} mAh · ${wh(acap)}` : null);
+  add("Capacity vs design (calculated)", fcap && acap ? (acap / fcap * 100).toFixed(1) + " %" : null);
+  add("Battery health (BMS)", health != null ? health + " %" : null);
+  const v = volt ?? (num(0x34) != null ? num(0x34) / 100 : null);
+  add("Voltage", v != null ? v.toFixed(2) + " V" : null);
+  const p33 = g(0x33), cur = curA ?? (p33 && p33.length >= 2 ? CURRENT_SIGN * i16(p33) / 100 : null);
+  add("Current", cur != null ? cur.toFixed(2) + " A" : null);
+  add("Power", pW != null ? Math.round(pW) + " W" : null);
+  const t = g(0x35);
+  add("Temperature", t && t.length >= 2 ? `${t[0] - 20} °C / ${t[1] - 20} °C` : null);
+  add("BMS version", num(0x17) != null ? ver(num(0x17)) : null);
+  add("Battery serial", g(0x10) ? String.fromCharCode(...g(0x10)).replace(/[^\x20-\x7e]/g, "").trim() : null);
+  const d = num(0x20);
+  if (d != null) {
+    const yr = (d >> 9) + 2000, mo = (d >> 5) & 15, da = d & 31;
+    add("Production date", (mo >= 1 && mo <= 12 && da >= 1 && yr >= 2015 && yr <= 2040) ? `${yr}-${String(mo).padStart(2, "0")}-${String(da).padStart(2, "0")}` : "unreadable (raw 0x" + d.toString(16) + ")");
+  }
+  add("Number of charges (BMS)", num(0x1c));
+  add("Charging cycles (BMS)", num(0x1b));
+  add("Avg added per charge (your log)", charges.length ? (charges.reduce((a, c) => a + c.wh, 0) / charges.length).toFixed(1) + " Wh over " + charges.length + " charge" + (charges.length === 1 ? "" : "s") : null);
+  add("BMS status code", num(0x30) != null ? "0x" + num(0x30).toString(16) : null);
+  const cp = g(0x40);
+  if (cp && cp.length >= 4) {
+    const c = cellList(cp), n = c.length, mean = c.reduce((a, b) => a + b, 0) / n;
+    const sd = Math.sqrt(c.reduce((a, b) => a + (b - mean) ** 2, 0) / n);
+    const hi = c.indexOf(Math.max(...c)), lo = c.indexOf(Math.min(...c));
+    add("Difference between cells", (c[hi] - c[lo]) + " mV");
+    add("Cell standard deviation", sd.toFixed(1) + " mV");
+    add("Highest cell", `${hi + 1}# ${(c[hi] / 1000).toFixed(3)} V`);
+    add("Lowest cell", `${lo + 1}# ${(c[lo] / 1000).toFixed(3)} V`);
+    add("Average cell", (mean / 1000).toFixed(3) + " V");
+    add("Sum of cells", (c.reduce((a, b) => a + b, 0) / 1000).toFixed(2) + " V");
+  }
+  $("#xinfo").innerHTML = L.length
+    ? L.map(([k, val]) => `<div class="row"><span>${k}</span><span>${esc(val)}</span></div>`).join("")
+    : '<p class="sub" style="margin:0">No battery data yet. Connect, then press Refresh.</p>';
+}
+$("#xrefresh").onclick = () => readInfo(EXTRA_REFRESH);
+$("#xbox").addEventListener("toggle", () => {
+  if (!$("#xbox").open) return;
+  renderExtra();
+  if (device && device.gatt && device.gatt.connected) readInfo(EXTRA_REFRESH);
+});
+
 // ---- Scooter profiles: logs are kept separately for each scooter (by serial number) ----
 const SKEY = "m365scooters";
 let scooterId = null, profiles = {};
@@ -750,3 +815,4 @@ document.querySelectorAll("#controls button[data-reg]").forEach(b =>
 </script>
 </body>
 </html>
+
