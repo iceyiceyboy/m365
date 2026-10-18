@@ -129,7 +129,7 @@
 
   <div class="panel">
     <div class="row"><b>Trip log</b>
-      <div class="grp"><button id="csv">Download CSV</button><button id="clear">Clear</button></div></div>
+      <div class="grp"><button id="csv">Download CSV</button><button id="csvcopy">Copy CSV</button><button id="clear">Clear</button></div></div>
     <p class="sub" id="tripstate" style="margin:0 0 8px">Start the live readout to record trips. A trip starts when you move and ends after 60 s stopped.</p>
     <div style="overflow-x:auto"><table id="trips"></table></div>
   </div>
@@ -179,7 +179,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.82"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82 -> 1.83)
+const VERSION = "1.83"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82 -> 1.83 -> 1.84)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -591,12 +591,37 @@ function renderTrips(){
     : "";
   updateRange();
 }
-$("#csv").onclick = () => {
+function csvText(){
   const head = "start,end,duration_min,moving_min,distance_km,avg_kmh,top_kmh,energy_wh,wh_per_km,regen_wh,peak_regen_w,odo_start_km,odo_end_km,battery_start_pct,battery_end_pct,peak_power_w,max_temp_c,min_voltage_v,cell_spread_mv,alerts";
   const lines = trips.map(t => [`"${t.start}"`,`"${t.end}"`,t.durMin.toFixed(1),t.movMin.toFixed(1),t.km.toFixed(2),t.avg.toFixed(1),t.top.toFixed(1),(t.wh ?? 0).toFixed(1),(t.whkm ?? 0).toFixed(1),(t.regenWh ?? 0).toFixed(2),Math.round(t.peak ?? 0),t.odoStart,t.odoEnd,t.battStart,t.battEnd,Math.round(t.peakW ?? 0),t.maxTemp ?? "",t.minV ?? "",t.spread ?? "",`"${(t.alerts || []).join("; ")}"`].join(","));
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([[head, ...lines].join("\n")], { type: "text/csv" }));
-  a.download = "m365-trips-" + ((profiles[scooterId] && profiles[scooterId].name) || "scooter").replace(/\W+/g, "-") + ".csv"; a.click();
+  return [head, ...lines].join("\n");
+}
+const csvName = () => "m365-trips-" + ((profiles[scooterId] && profiles[scooterId].name) || "scooter").replace(/\W+/g, "-") + ".csv";
+// iOS browsers (Bluefy) often ignore normal downloads, so: share sheet first, then normal download, plus a Copy button
+$("#csv").onclick = async () => {
+  if (!trips.length) return log("No trips to export yet.", true);
+  const text = csvText(), name = csvName();
+  try {
+    const file = new File([text], name, { type: "text/csv" });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: name }); return; }
+  } catch(e){ if (e.name === "AbortError") return; log("Share sheet failed: " + e.message, true); }
+  try {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/csv" }));
+    a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    log("Download started. If nothing was saved, use Copy CSV and paste it into Notes or Files.");
+  } catch(e){ log("Download failed: " + e.message + ". Use Copy CSV instead.", true); }
+};
+$("#csvcopy").onclick = async () => {
+  if (!trips.length) return log("No trips to copy yet.", true);
+  const text = csvText();
+  try { await navigator.clipboard.writeText(text); log("CSV copied. Paste it into Notes, Files or a spreadsheet."); }
+  catch(e){
+    const ta = document.createElement("textarea");
+    ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); log("CSV copied. Paste it into Notes, Files or a spreadsheet."); } catch(e2){ log("Could not copy the CSV.", true); }
+    ta.remove();
+  }
 };
 $("#clear").onclick = () => { if (confirm("Delete all logged trips?")) { trips = []; saveTrips(trips); renderTrips(); } };
 // ---- Charging ----
