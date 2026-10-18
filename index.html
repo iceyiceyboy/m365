@@ -30,6 +30,8 @@
   table{border-collapse:collapse;width:100%;font-size:.88rem;white-space:nowrap}
   th,td{text-align:left;padding:5px 10px 5px 0;border-top:1px solid var(--line)}
   th{color:var(--mute);font-weight:600}
+  #rng{font-size:1.25rem;font-weight:700;color:var(--acc)}
+  #rngbasis{color:var(--mute);font-size:.85rem}
 </style>
 </head>
 <body>
@@ -67,6 +69,8 @@
     <div class="row"><b>Consumption now</b><span id="whkm">–</span></div>
     <div class="row"><b>Consumption average (this trip)</b><span id="whavg">–</span></div>
     <div class="row"><b>Regen braking (this trip)</b><span id="regen">–</span></div>
+    <div class="row"><b>Estimated range (from your rides)</b><span id="rng">–</span></div>
+    <div class="row"><span id="rngbasis">Needs a ride of at least 0.5 km to learn your consumption.</span></div>
     <div class="row"><b>Live readout</b><button id="live">Start</button></div>
     <div class="row"><b>Lock</b>
       <div class="grp">
@@ -102,6 +106,12 @@
 const SVC = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
 const TX  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // write to scooter
 const RX  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notifications
+
+// ---- Range estimate settings ----
+const BATTERY_WH = 280;       // M365 pack: 36 V x 7.8 Ah. Change if you have a bigger pack.
+const NOMINAL_V = 36;         // used to turn "capacity left" (mAh) into Wh
+const MIN_RIDE_KM = 0.5;      // rides shorter than this are ignored
+const RANGE_RIDES = 5;        // how many recent rides to average
 
 let device, txChar;
 // Bluetooth allows only one write at a time, so writes go through a queue (with one retry if busy)
@@ -281,6 +291,7 @@ function renderInfo(){
     return c.map(v => (v / 1000).toFixed(3)).join(" ") + ` (spread ${Math.max(...c) - Math.min(...c)} mV)`;
   });
   $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span>${v}</span></div>`).join("");
+  updateRange();
 }
 async function readInfo(only){
   const q = only || [[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
@@ -351,11 +362,47 @@ let odoM = null, batt = null, trip = null, idleS = 0, lastT = 0;
 const CURRENT_SIGN = 1;
 let curA = null, volt = null, pW = null;
 function showPower(kph){
-  if (pW == null) return;
-  $("#pw").textContent = Math.round(pW) + " W";
-  $("#whkm").textContent = kph > 3 ? (pW / kph).toFixed(1) + " Wh/km" : "–";
-  $("#whavg").textContent = trip && trip.integ > 0.05 ? (trip.wh / trip.integ).toFixed(1) + " Wh/km" : "–";
-  $("#regen").textContent = trip ? trip.regenWh.toFixed(2) + " Wh, peak " + Math.round(trip.peak) + " W" : "–";
+  if (pW != null) {
+    $("#pw").textContent = Math.round(pW) + " W";
+    $("#whkm").textContent = kph > 3 ? (pW / kph).toFixed(1) + " Wh/km" : "–";
+    $("#whavg").textContent = trip && trip.integ > 0.05 ? (trip.wh / trip.integ).toFixed(1) + " Wh/km" : "–";
+    $("#regen").textContent = trip ? trip.regenWh.toFixed(2) + " Wh, peak " + Math.round(trip.peak) + " W" : "–";
+  }
+  updateRange();
+}
+
+// ---- Estimated range ----
+// Energy left in the pack (Wh): prefers the pack's own "capacity left" reading, falls back to battery % x pack size.
+function energyLeftWh(){
+  const cap = info[0x25 + ":" + 0x31];
+  if (cap && cap.length >= 2 && u16(cap) > 0) return u16(cap) / 1000 * NOMINAL_V;
+  if (batt != null) return batt / 100 * BATTERY_WH;
+  return null;
+}
+// Consumption (Wh/km) = total energy / total distance over the last few rides plus the current ride.
+// Any ride shorter than MIN_RIDE_KM (and without valid energy data) is ignored.
+function rangeBasis(){
+  let wh = 0, km = 0, n = 0, cur = false;
+  for (const t of trips.slice(0, RANGE_RIDES)) {
+    if (t.km >= MIN_RIDE_KM && t.wh > 0) { wh += t.wh; km += t.km; n++; }
+  }
+  if (trip && trip.integ >= MIN_RIDE_KM && trip.wh > 0) { wh += trip.wh; km += trip.integ; cur = true; }
+  return km >= MIN_RIDE_KM ? { whkm: wh / km, n, cur } : null;
+}
+function updateRange(){
+  const basis = rangeBasis(), left = energyLeftWh();
+  if (!basis) {
+    $("#rng").textContent = "–";
+    $("#rngbasis").textContent = "Needs a ride of at least " + MIN_RIDE_KM + " km to learn your consumption.";
+    return;
+  }
+  if (left == null) {
+    $("#rng").textContent = "–";
+    $("#rngbasis").textContent = "Waiting for battery level…";
+    return;
+  }
+  $("#rng").textContent = (left / basis.whkm).toFixed(1) + " km";
+  $("#rngbasis").textContent = `Based on ${basis.n} past ride${basis.n === 1 ? "" : "s"}${basis.cur ? " + this ride" : ""} at ${basis.whkm.toFixed(1)} Wh/km, with about ${Math.round(left)} Wh left.`;
 }
 const KEY = "m365trips";
 const loadTrips = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } };
@@ -414,6 +461,7 @@ function renderTrips(){
   $("#trips").innerHTML = trips.length
     ? `<tr><th>Started</th><th>Time</th><th>Distance</th><th>Avg km/h</th><th>Top km/h</th><th>Wh/km</th><th>Regen Wh</th><th>Battery</th></tr>${rows}`
     : "";
+  updateRange();
 }
 $("#csv").onclick = () => {
   const head = "start,end,duration_min,moving_min,distance_km,avg_kmh,top_kmh,energy_wh,wh_per_km,regen_wh,peak_regen_w,odo_start_km,odo_end_km,battery_start_pct,battery_end_pct";
