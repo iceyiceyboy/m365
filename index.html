@@ -88,6 +88,25 @@
   </div>
 
   <div class="panel">
+    <div class="row"><b>Charging</b><span id="chgstate">Not charging</span></div>
+    <div class="row"><b>Charge power (into battery)</b><span id="chgw">–</span></div>
+    <div class="row"><b>Charge current</b><span id="chga">–</span></div>
+    <div class="row"><b>Pack voltage</b><span id="chgv">–</span></div>
+    <div class="row"><b>Battery</b><span id="chgpct">–</span></div>
+    <div class="row"><b>Added this charge</b><span id="chgadd">–</span></div>
+    <div class="row"><b>Est. time to full</b><span id="chgeta">–</span></div>
+    <div class="row"><b>Error / warning codes</b><span id="chgerr">–</span></div>
+    <div class="row"><b>Battery temperature</b><span id="chgtemp">–</span></div>
+    <div class="row"><b>Alerts (this charge)</b><span id="chgalert">–</span></div>
+    <p class="sub" style="margin:8px 0 0;font-size:.85rem">Keep the scooter switched on while it charges so Bluetooth stays connected and the live readout is running. Time to full assumes the current charge rate; the last 10–20% is slower.</p>
+  </div>
+
+  <div class="panel">
+    <div class="row"><b>Charge log</b><button id="cclear">Clear</button></div>
+    <div style="overflow-x:auto"><table id="charges"></table></div>
+  </div>
+
+  <div class="panel">
     <div class="row"><b>Scooter info</b><button id="readinfo">Read all</button></div>
     <div id="info"><p class="sub" style="margin:0">Connect, then press Read all.</p></div>
   </div>
@@ -121,6 +140,8 @@ const MIN_RIDE_KM = 0.5;      // rides shorter than this are ignored
 const RANGE_RIDES = 5;        // how many recent rides to average
 // ---- Warning thresholds ----
 const TEMP_WARN_C = 60;       // controller temperature that counts as a warning
+const BATT_TEMP_WARN_C = 45;  // battery temperature that counts as a warning
+const CHARGE_MIN_W = 10;      // power flowing in (while stopped) that counts as charging
 const CELL_DEV_MV = 50;       // a cell this far from the median cell is flagged
 const CELL_MIN_MV = 2800, CELL_MAX_MV = 4250; // absolute cell limits
 
@@ -142,7 +163,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.5"; // bump by 0.1 on every update (1.5 -> 1.6 -> 1.7 ...)
+const VERSION = "1.6"; // bump by 0.1 on every update (1.6 -> 1.7 -> 1.8 ...)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -327,6 +348,7 @@ function renderInfo(){
   });
   $("#info").innerHTML = L.map(([k, v]) => `<div class="row"><span>${k}</span><span${k === "Cell voltages" ? ' class="cells"' : ""}>${v}</span></div>`).join("");
   updateRange();
+  updateCharge();
 }
 async function readInfo(only){
   const q = only || [[0x7b,2,0x20],[0x7c,2,0x20],[0x7d,2,0x20],[0x10,14,0x20],[0x1a,2,0x20],[0x1b,2,0x20],[0x1c,2,0x20],[0x3e,2,0x20],[0x2f,2,0x20],[0x25,2,0x20],
@@ -371,7 +393,7 @@ const WHEEL_DIAMETER_M = 0.215; // M365 8.5" tyre; adjust if yours differs
 let liveTimer = null, tick = 0;
 function stopLive(){
   clearInterval(liveTimer); liveTimer = null; $("#live").textContent = "Start"; $("#live").classList.remove("on");
-  endTrip();
+  endTrip(); endCharge();
 }
 $("#live").onclick = async () => {
   if (liveTimer) return stopLive();
@@ -411,25 +433,31 @@ function showPower(kph){
 
 // ---- Trip alerts and extra stats ----
 function addAlert(a){
-  if (!trip || trip.alerts.has(a)) return;
-  trip.alerts.add(a);
-  log("⚠ " + a + " during trip", true);
-  $("#tripstate").textContent = "⚠ " + [...trip.alerts].join(", ");
-  $("#tripstate").classList.add("err");
+  if (trip && !trip.alerts.has(a)) {
+    trip.alerts.add(a); log("⚠ " + a + " during trip", true);
+    $("#tripstate").textContent = "⚠ " + [...trip.alerts].join(", ");
+    $("#tripstate").classList.add("err");
+  }
+  if (charge && !charge.alerts.has(a)) { charge.alerts.add(a); log("⚠ " + a + " while charging", true); }
 }
 function trackTrip(src, reg, p){
-  if (!trip || !p || !p.length) return;
+  if ((!trip && !charge) || !p || !p.length) return;
   if (src === 0x23 && reg === 0x1b && u16(p)) addAlert("Error " + u16(p));
   if (src === 0x23 && reg === 0x1c && u16(p)) addAlert("Warning " + u16(p));
   if (src === 0x23 && reg === 0x3e) {
     const t = i16(p) / 10;
-    trip.maxTemp = Math.max(trip.maxTemp ?? t, t);
+    if (trip) trip.maxTemp = Math.max(trip.maxTemp ?? t, t);
     if (t >= TEMP_WARN_C) addAlert("Controller hot");
+  }
+  if (src === 0x25 && reg === 0x35) {
+    const t = Math.max(p[0], p[1]) - 20;
+    if (charge) charge.maxTemp = Math.max(charge.maxTemp ?? t, t);
+    if (t >= BATT_TEMP_WARN_C) addAlert("Battery hot");
   }
   if (src === 0x25 && reg === 0x40) {
     const c = cellList(p);
     if (c.length) {
-      trip.maxSpread = Math.max(trip.maxSpread, Math.max(...c) - Math.min(...c));
+      if (trip) trip.maxSpread = Math.max(trip.maxSpread, Math.max(...c) - Math.min(...c));
       const bad = badCells(c);
       if (bad.length) addAlert("Cell " + bad.map(i => i + 1).join(",") + " off");
     }
@@ -478,6 +506,7 @@ function onSpeed(kph){
   const now = Date.now();
   const dt = lastT ? (now - lastT) / 1000 : 0.5;
   lastT = now;
+  trackCharge(kph, dt);
   if (!trip && kph > 1) {
     trip = { start: now, movingS: 0, top: 0, integ: 0, wh: 0, regenWh: 0, peak: 0, peakW: 0, maxTemp: null, minV: null, maxSpread: 0, alerts: new Set(), odoStart: odoM, battStart: batt };
     idleS = 0;
@@ -549,6 +578,69 @@ $("#csv").onclick = () => {
   a.download = "m365-trips.csv"; a.click();
 };
 $("#clear").onclick = () => { if (confirm("Delete all logged trips?")) { trips = []; saveTrips(trips); renderTrips(); } };
+// ---- Charging ----
+// Charging = power flowing INTO the battery while the scooter is stopped. Uses the same sign setting as regen (CURRENT_SIGN).
+const CKEY = "m365charges";
+let charges = (() => { try { return JSON.parse(localStorage.getItem(CKEY)) || []; } catch(e){ return []; } })();
+let charge = null, chgIdle = 0, chgW = null, chargingNow = false;
+function trackCharge(kph, dt){
+  const inW = (pW != null && kph < 0.5) ? -pW : 0;
+  chargingNow = inW >= CHARGE_MIN_W;
+  if (chargingNow) {
+    chgW = chgW == null ? inW : chgW * 0.9 + inW * 0.1;
+    chgIdle = 0;
+    if (!charge) {
+      charge = { start: Date.now(), secs: 0, wh: 0, peak: 0, maxTemp: null, alerts: new Set(), pctStart: batt };
+      log("Charging started.");
+      [[0x23, 0x1b], [0x23, 0x1c], [0x25, 0x35], [0x25, 0x40]].forEach(([sr, r]) => { const q = info[sr + ":" + r]; if (q) trackTrip(sr, r, q); });
+    }
+    charge.secs += dt; charge.wh += inW * dt / 3600; charge.peak = Math.max(charge.peak, inW);
+  } else {
+    chgW = null;
+    if (charge && (chgIdle += dt) >= 30) endCharge();
+  }
+  updateCharge();
+}
+function endCharge(){
+  if (!charge) return;
+  const c = charge; charge = null; chgIdle = 0;
+  if (c.wh >= 1) {
+    charges.unshift({ start: new Date(c.start).toLocaleString(), durMin: c.secs / 60, wh: c.wh, peak: c.peak,
+      pctStart: c.pctStart ?? "", pctEnd: batt ?? "", maxTemp: c.maxTemp ?? "", alerts: [...c.alerts] });
+    try { localStorage.setItem(CKEY, JSON.stringify(charges)); } catch(e){ log("Could not save charge log: " + e.message, true); }
+    log("Charging ended: " + c.wh.toFixed(1) + " Wh added.");
+  }
+  renderCharges(); updateCharge();
+}
+const fmtDur = m => m < 1 ? "under 1 min" : (m >= 60 ? Math.floor(m / 60) + " h " : "") + Math.round(m % 60) + " min";
+function updateCharge(){
+  $("#chgstate").textContent = chargingNow ? "Charging" : "Not charging";
+  $("#chgw").textContent = chargingNow ? Math.round(chgW) + " W" : "–";
+  $("#chga").textContent = chargingNow && volt ? (chgW / volt).toFixed(2) + " A" : "–";
+  $("#chgv").textContent = volt != null ? volt.toFixed(2) + " V" : "–";
+  $("#chgpct").textContent = batt != null ? batt + " %" : "–";
+  $("#chgadd").textContent = charge ? charge.wh.toFixed(1) + " Wh" + (charge.pctStart != null && batt != null ? ` (${charge.pctStart} → ${batt} %)` : "") : "–";
+  const left = energyLeftWh();
+  $("#chgeta").textContent = !chargingNow || left == null ? "–" : (batt >= 100 || left >= BATTERY_WH) ? "Full" : fmtDur((BATTERY_WH - left) / chgW * 60);
+  const e = info[0x23 + ":" + 0x1b], w = info[0x23 + ":" + 0x1c];
+  const ec = e && e.length ? u16(e) : null, wc = w && w.length ? u16(w) : null;
+  const er = $("#chgerr");
+  er.textContent = ec == null && wc == null ? "–" : (ec || wc) ? "⚠ " + (ec ? "Error " + ec : "") + (ec && wc ? ", " : "") + (wc ? "Warning " + wc : "") : "none";
+  er.className = (ec || wc) ? "err" : "";
+  const t = info[0x25 + ":" + 0x35];
+  $("#chgtemp").textContent = t && t.length >= 2 ? `${t[0] - 20} °C / ${t[1] - 20} °C` : "–";
+  const al = $("#chgalert");
+  al.textContent = charge ? (charge.alerts.size ? "⚠ " + [...charge.alerts].join(", ") : "none") : "–";
+  al.className = charge && charge.alerts.size ? "err" : "";
+}
+function renderCharges(){
+  const n = (v, d = 0) => v === "" || v == null ? "–" : Number(v).toFixed(d);
+  const rows = charges.map(c => `<tr><td>${c.start}</td><td>${fmtDur(c.durMin)}</td><td>${c.wh.toFixed(1)}</td><td>${c.pctStart}→${c.pctEnd}%</td><td>${n(c.peak)}</td><td>${n(c.maxTemp)}</td><td class="${c.alerts.length ? "err" : ""}">${c.alerts.length ? "⚠ " + c.alerts.map(esc).join(", ") : "OK"}</td></tr>`).join("");
+  $("#charges").innerHTML = charges.length
+    ? `<tr><th>Started</th><th>Time</th><th>Added Wh</th><th>Battery</th><th>Peak W</th><th>Max °C</th><th>Alerts</th></tr>${rows}` : "";
+}
+$("#cclear").onclick = () => { if (confirm("Delete the charge log?")) { charges = []; try { localStorage.setItem(CKEY, "[]"); } catch(e){} renderCharges(); } };
+renderCharges(); updateCharge();
 renderTrips();
 $("#connect").onclick = connect;
 document.querySelectorAll("#controls button[data-reg]").forEach(b =>
