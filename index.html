@@ -35,6 +35,7 @@
   #rngbasis{color:var(--mute);font-size:.85rem}
   details.panel>summary{cursor:pointer}
   details[open].panel>summary{margin-bottom:8px}
+  #sname{font-size:1.2rem;font-weight:700}
   #ver{font-size:.9rem;font-weight:400;color:var(--mute)}
   .cells{flex-basis:100%;line-height:1.8;font-size:.92rem}
   .cellbad{color:var(--bad);font-weight:700}
@@ -49,6 +50,13 @@
   <div class="panel" id="status">
     <span id="state">Not connected</span>
     <button class="main" id="connect">Connect to scooter</button>
+  </div>
+
+  <div class="panel" id="tile">
+    <div class="row"><b>Scooter</b><span id="sname">None identified</span></div>
+    <div class="row"><span id="sid" style="color:var(--mute);font-size:.88rem">Connect to load this scooter's logs.</span>
+      <div class="grp"><button id="srename" disabled>Rename</button><button id="spack" disabled>Pack Wh</button></div></div>
+    <div class="row" id="snoterow" style="display:none"><span id="snote" class="err"></span></div>
   </div>
 
   <div class="panel" id="controls">
@@ -135,7 +143,7 @@ const TX  = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // write to scooter
 const RX  = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notifications
 
 // ---- Range estimate settings ----
-const BATTERY_WH = 280;       // M365 pack: 36 V x 7.8 Ah. Change if you have a bigger pack.
+let BATTERY_WH = 280;       // M365 pack: 36 V x 7.8 Ah. Change if you have a bigger pack.
 const NOMINAL_V = 36;         // used to turn "capacity left" (mAh) into Wh
 const MIN_RIDE_KM = 0.5;      // rides shorter than this are ignored
 const RANGE_RIDES = 5;        // how many recent rides to average
@@ -164,7 +172,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.7"; // bump by 0.1 on every update (1.7 -> 1.8 -> 1.9 ...)
+const VERSION = "1.8"; // bump by 0.1 on every update (1.8 -> 1.9 -> 2.0 ...)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -207,6 +215,8 @@ async function connect(){
       log("Disconnected. The scooter may have powered off, gone out of range, or dropped the connection.", true);
       stopLive(); $("#state").textContent = "Disconnected"; setEnabled(false); $("#connect").textContent = "Connect to scooter";
     });
+    for (const k in info) delete info[k];   // forget the previous scooter's readings
+    $("#snoterow").style.display = "none";
     log("Picked " + (device.name || "a device") + ". Connecting…");
     $("#state").textContent = "Connecting…";
     const server = await within(device.gatt.connect(), 15000, "Connecting");
@@ -263,6 +273,7 @@ async function connect(){
     setEnabled(true);
     log("Connected.");
     await readInfo();                      // fill the info panel straight away
+    if (!info[0x23 + ":" + 0x10]) useScooter("name-" + (device.name || "unknown")); // no serial readable: fall back to the Bluetooth name
     if (!rxCount) log(rawRx
       ? "The scooter sent data in a format this tool can't read. Its firmware probably uses encryption."
       : "The scooter connected but sent no replies. Its firmware may require encrypted communication, which this tool can't do.", true);
@@ -308,6 +319,7 @@ const ver = v => `${(v >> 8) & 15}.${(v >> 4) & 15}.${v & 15}`;
 function onReg(src, reg, p){
   info[src + ":" + reg] = p;
   if (src === 0x23 && [0x7b, 0x7c, 0x7d].includes(reg)) markSel(reg, u16(p));
+  if (src === 0x23 && reg === 0x10) useScooter(String.fromCharCode(...p).replace(/[^\x20-\x7e]/g, "").trim());
   trackTrip(src, reg, p);
   renderInfo();
 }
@@ -498,10 +510,10 @@ function updateRange(){
   $("#rng").textContent = (left / basis.whkm).toFixed(1) + " km";
   $("#rngbasis").textContent = `Based on ${basis.n} past ride${basis.n === 1 ? "" : "s"}${basis.cur ? " + this ride" : ""} at ${basis.whkm.toFixed(1)} Wh/km, with about ${Math.round(left)} Wh left.`;
 }
-const KEY = "m365trips";
-const loadTrips = () => { try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } };
-const saveTrips = t => { try { localStorage.setItem(KEY, JSON.stringify(t)); } catch(e){ log("Could not save log: " + e.message, true); } };
-let trips = loadTrips();
+let KEY = null; // set per scooter in useScooter()
+const loadTrips = () => { if (!KEY) return []; try { return JSON.parse(localStorage.getItem(KEY)) || []; } catch(e){ return []; } };
+const saveTrips = t => { if (!KEY) return; try { localStorage.setItem(KEY, JSON.stringify(t)); } catch(e){ log("Could not save log: " + e.message, true); } };
+let trips = [];
 
 function onSpeed(kph){
   const now = Date.now();
@@ -576,13 +588,13 @@ $("#csv").onclick = () => {
   const lines = trips.map(t => [`"${t.start}"`,`"${t.end}"`,t.durMin.toFixed(1),t.movMin.toFixed(1),t.km.toFixed(2),t.avg.toFixed(1),t.top.toFixed(1),(t.wh ?? 0).toFixed(1),(t.whkm ?? 0).toFixed(1),(t.regenWh ?? 0).toFixed(2),Math.round(t.peak ?? 0),t.odoStart,t.odoEnd,t.battStart,t.battEnd,Math.round(t.peakW ?? 0),t.maxTemp ?? "",t.minV ?? "",t.spread ?? "",`"${(t.alerts || []).join("; ")}"`].join(","));
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([[head, ...lines].join("\n")], { type: "text/csv" }));
-  a.download = "m365-trips.csv"; a.click();
+  a.download = "m365-trips-" + ((profiles[scooterId] && profiles[scooterId].name) || "scooter").replace(/\W+/g, "-") + ".csv"; a.click();
 };
 $("#clear").onclick = () => { if (confirm("Delete all logged trips?")) { trips = []; saveTrips(trips); renderTrips(); } };
 // ---- Charging ----
 // Charging = power flowing INTO the battery while the scooter is stopped. Uses the same sign setting as regen (CURRENT_SIGN).
-const CKEY = "m365charges";
-let charges = (() => { try { return JSON.parse(localStorage.getItem(CKEY)) || []; } catch(e){ return []; } })();
+let CKEY = null; // set per scooter in useScooter()
+let charges = [];
 let charge = null, chgIdle = 0, chgW = null, chargingNow = false;
 function trackCharge(kph, dt){
   const inW = (pW != null && kph < 0.5) ? -pW : 0;
@@ -609,7 +621,7 @@ function endCharge(){
   if (c.wh >= 1) {
     charges.unshift({ start: new Date(c.start).toLocaleString(), durMin: c.secs / 60, wh: c.wh, rangeKm: rangeBasis() ? c.wh / rangeBasis().whkm : "", peak: c.peak,
       pctStart: c.pctStart ?? "", pctEnd: batt ?? "", maxTemp: c.maxTemp ?? "", alerts: [...c.alerts] });
-    try { localStorage.setItem(CKEY, JSON.stringify(charges)); } catch(e){ log("Could not save charge log: " + e.message, true); }
+    try { if (CKEY) localStorage.setItem(CKEY, JSON.stringify(charges)); } catch(e){ log("Could not save charge log: " + e.message, true); }
     log("Charging ended: " + c.wh.toFixed(1) + " Wh added.");
   }
   renderCharges(); updateCharge();
@@ -644,7 +656,55 @@ function renderCharges(){
   $("#charges").innerHTML = charges.length
     ? `<tr><th>Started</th><th>Time</th><th>Added Wh</th><th>Range +km</th><th>Battery</th><th>Peak W</th><th>Max °C</th><th>Alerts</th></tr>${rows}` : "";
 }
-$("#cclear").onclick = () => { if (confirm("Delete the charge log?")) { charges = []; try { localStorage.setItem(CKEY, "[]"); } catch(e){} renderCharges(); } };
+$("#cclear").onclick = () => { if (confirm("Delete the charge log?")) { charges = []; try { if (CKEY) localStorage.setItem(CKEY, "[]"); } catch(e){} renderCharges(); } };
+// ---- Scooter profiles: logs are kept separately for each scooter (by serial number) ----
+const SKEY = "m365scooters";
+let scooterId = null, profiles = {};
+try { profiles = JSON.parse(localStorage.getItem(SKEY)) || {}; } catch(e){}
+const saveProfiles = () => { try { localStorage.setItem(SKEY, JSON.stringify(profiles)); } catch(e){} };
+const readList = k => { try { return JSON.parse(localStorage.getItem(k)) || []; } catch(e){ return []; } };
+function drawTile(){
+  const p = scooterId && profiles[scooterId];
+  $("#sname").textContent = p ? p.name : "None identified";
+  $("#sid").textContent = p
+    ? `Serial ${scooterId} · pack ${p.wh} Wh · ${trips.length} trips, ${charges.length} charges logged`
+    : "Connect to load this scooter's logs. Nothing is logged until a scooter is identified.";
+  $("#srename").disabled = $("#spack").disabled = !p;
+}
+function useScooter(id){
+  if (!id || id === scooterId) return;
+  endTrip(); endCharge();   // save anything in progress to the PREVIOUS scooter first
+  const prev = scooterId;
+  scooterId = id; KEY = "m365trips:" + id; CKEY = "m365charges:" + id;
+  if (!profiles[id]) {
+    profiles[id] = { name: "Scooter " + (Object.keys(profiles).length + 1), wh: 280 };
+    saveProfiles();
+    // logs from before scooters were tracked: offer to give them to this scooter
+    const lt = localStorage.getItem("m365trips"), lc = localStorage.getItem("m365charges");
+    if ((lt || lc) && confirm("Found logs saved from before scooters were tracked. Assign them to this scooter (" + id + ")?")) {
+      try { if (lt) localStorage.setItem(KEY, lt); if (lc) localStorage.setItem(CKEY, lc);
+            localStorage.removeItem("m365trips"); localStorage.removeItem("m365charges"); } catch(e){}
+    }
+  }
+  BATTERY_WH = profiles[id].wh;
+  trips = readList(KEY); charges = readList(CKEY);
+  if (prev) { odoM = batt = curA = volt = pW = chgW = null; }
+  log((prev ? "Switched scooter to " : "Scooter identified: ") + profiles[id].name + " (" + id + "). Its own logs are loaded.");
+  if (prev) {
+    $("#snote").textContent = "⚠ Switched from " + (profiles[prev] ? profiles[prev].name : prev) + ". Logs and range now use this scooter only.";
+    $("#snoterow").style.display = "";
+  }
+  renderTrips(); renderCharges(); updateCharge(); drawTile();
+}
+$("#srename").onclick = () => {
+  const n = prompt("Name for this scooter:", profiles[scooterId].name);
+  if (n && n.trim()) { profiles[scooterId].name = n.trim().slice(0, 30); saveProfiles(); drawTile(); }
+};
+$("#spack").onclick = () => {
+  const w = Number(prompt("Battery size in Wh (stock M365 = 280):", profiles[scooterId].wh));
+  if (w >= 50 && w <= 2000) { profiles[scooterId].wh = w; BATTERY_WH = w; saveProfiles(); drawTile(); updateRange(); updateCharge(); }
+};
+drawTile();
 renderCharges(); updateCharge();
 renderTrips();
 $("#connect").onclick = connect;
