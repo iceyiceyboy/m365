@@ -104,6 +104,7 @@
     <div class="row"><b>Pack voltage</b><span id="chgv">–</span></div>
     <div class="row"><b>Battery</b><span id="chgpct">–</span></div>
     <div class="row"><b>Added this charge</b><span id="chgadd">–</span></div>
+    <div class="row"><b>Elapsed charging time</b><span id="chgel">–</span></div>
     <div class="row"><b>Est. time to full</b><span id="chgeta">–</span></div>
     <div class="row"><b>Range added this charge</b><span id="chgkm">–</span></div>
     <div class="row"><b>Range gain per hour</b><span id="chgkmh">–</span></div>
@@ -111,9 +112,13 @@
     <div class="row"><b>Battery temperature</b><span id="chgtemp">–</span></div>
     <div class="row"><b>Alerts (this charge)</b><span id="chgalert">–</span></div>
     <p class="sub" style="margin:8px 0 0;font-size:.85rem">Keep the scooter switched on while it charges so Bluetooth stays connected and the live readout is running. Time to full assumes the current charge rate; the last 10–20% is slower.</p>
-    <div class="row"><b>Charge log</b><button id="cclear">Clear</button></div>
-    <div style="overflow-x:auto"><table id="charges"></table></div>
   </details>
+
+  <div class="panel">
+    <div class="row"><b>Charge log</b><button id="cclear">Clear</button></div>
+    <p class="sub" id="chgempty" style="margin:0 0 8px">No charges logged yet. A charge is saved about 30 s after it stops.</p>
+    <div style="overflow-x:auto"><table id="charges"></table></div>
+  </div>
 
   <div class="panel">
     <div class="row"><b>Scooter info</b><button id="readinfo">Read all</button></div>
@@ -172,7 +177,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.8"; // bump by 0.1 on every update (1.8 -> 1.9 -> 2.0 ...)
+const VERSION = "1.81"; // new feature: +0.1 (1.8 -> 1.9). Small addition to an existing feature: add a digit (1.8 -> 1.81 -> 1.82)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -634,6 +639,8 @@ function updateCharge(){
   $("#chgv").textContent = volt != null ? volt.toFixed(2) + " V" : "–";
   $("#chgpct").textContent = batt != null ? batt + " %" : "–";
   $("#chgadd").textContent = charge ? charge.wh.toFixed(1) + " Wh" + (charge.pctStart != null && batt != null ? ` (${charge.pctStart} → ${batt} %)` : "") : "–";
+  const sec = charge ? Math.round(charge.secs) : 0;
+  $("#chgel").textContent = charge ? Math.floor(sec / 3600) + ":" + String(Math.floor(sec / 60) % 60).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0") : "–";
   const left = energyLeftWh();
   $("#chgeta").textContent = !chargingNow || left == null ? "–" : (batt >= 100 || left >= BATTERY_WH) ? "Full" : fmtDur((BATTERY_WH - left) / chgW * 60);
   const rb = rangeBasis();
@@ -653,6 +660,7 @@ function updateCharge(){
 function renderCharges(){
   const n = (v, d = 0) => v === "" || v == null ? "–" : Number(v).toFixed(d);
   const rows = charges.map(c => `<tr><td>${c.start}</td><td>${fmtDur(c.durMin)}</td><td>${c.wh.toFixed(1)}</td><td>${n(c.rangeKm, 1)}</td><td>${c.pctStart}→${c.pctEnd}%</td><td>${n(c.peak)}</td><td>${n(c.maxTemp)}</td><td class="${c.alerts.length ? "err" : ""}">${c.alerts.length ? "⚠ " + c.alerts.map(esc).join(", ") : "OK"}</td></tr>`).join("");
+  $("#chgempty").style.display = charges.length ? "none" : "";
   $("#charges").innerHTML = charges.length
     ? `<tr><th>Started</th><th>Time</th><th>Added Wh</th><th>Range +km</th><th>Battery</th><th>Peak W</th><th>Max °C</th><th>Alerts</th></tr>${rows}` : "";
 }
