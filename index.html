@@ -49,7 +49,7 @@
 
   <div class="panel" id="status">
     <span id="state">Not connected</span>
-    <button class="main" id="connect">Connect to scooter</button>
+    <div class="grp"><button class="main" id="connect">Connect to scooter</button><button id="connectall">Show all devices</button></div>
   </div>
 
   <div class="panel" id="tile">
@@ -185,7 +185,7 @@ function gattWrite(p){
 }
 const within = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(what + " timed out after " + ms / 1000 + " s")), ms))]);
 const $ = s => document.querySelector(s);
-const VERSION = "1.9"; // new feature: +0.1 (1.9 -> 2.0). Small addition to an existing feature: add a digit (1.9 -> 1.91 -> 1.92)
+const VERSION = "1.91"; // new feature: +0.1 (1.9 -> 2.0). Small addition to an existing feature: add a digit (1.9 -> 1.91 -> 1.92)
 $("#ver").textContent = "v" + VERSION;
 document.title = "M365 Settings v" + VERSION;
 const LOGKEY = "m365log";
@@ -217,13 +217,15 @@ function packet(reg, val){
   return new Uint8Array([0x55, 0xaa, ...body, chk & 0xff, chk >> 8]);
 }
 
-async function connect(){
+async function connect(all){
   try{
     log("Opening device picker…");
-    device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "MIScooter" }, { services: [SVC] }],
-      optionalServices: [SVC]
-    });
+    // "Show all devices" lists every nearby Bluetooth device, for scooters that advertise under a different name (e.g. newer models)
+    const more = ["battery_service", "device_information", "generic_access", "0000fe95-0000-1000-8000-00805f9b34fb"];
+    if (all) log("Showing ALL nearby Bluetooth devices. Pick your scooter.");
+    device = await navigator.bluetooth.requestDevice(all
+      ? { acceptAllDevices: true, optionalServices: [SVC, ...more] }
+      : { filters: [{ namePrefix: "MIScooter" }, { services: [SVC] }], optionalServices: [SVC] });
     device.addEventListener("gattserverdisconnected", () => {
       log("Disconnected. The scooter may have powered off, gone out of range, or dropped the connection.", true);
       stopLive(); $("#state").textContent = "Disconnected"; setEnabled(false); $("#connect").textContent = "Connect to scooter";
@@ -402,7 +404,7 @@ $("#clearlog").onclick = () => { logLines = []; try { localStorage.removeItem(LO
 log("--- Page opened " + new Date().toLocaleString());
 
 if(!navigator.bluetooth){
-  $("#connect").disabled = true;
+  $("#connect").disabled = true; $("#connectall").disabled = true;
   log("This browser has no Web Bluetooth. Open this file in Chrome or Edge.", true);
 }
 // Read request: 55 AA | 03 | 20 | 01 (read) | register 0x29 | 4 bytes to read | checksum
@@ -809,10 +811,10 @@ $("#spack").onclick = () => {
 drawTile();
 renderCharges(); updateCharge();
 renderTrips();
-$("#connect").onclick = connect;
+$("#connect").onclick = () => connect(false);
+$("#connectall").onclick = () => connect(true);
 document.querySelectorAll("#controls button[data-reg]").forEach(b =>
   b.onclick = () => send(Number(b.dataset.reg), Number(b.dataset.val)));
 </script>
 </body>
 </html>
-
